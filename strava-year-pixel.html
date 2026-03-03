@@ -1,0 +1,1680 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Strava Year in Pixels 2025</title>
+    <style>
+        body { font-family: 'Helvetica Neue', Arial, sans-serif; margin: 40px; background: #fafafa; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        canvas { border: 2px solid #ddd; background: white; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .key { display: flex; gap: 20px; margin: 20px 0; font-size: 14px; flex-wrap: wrap; }
+        .key-item { display: flex; align-items: center; gap: 8px; }
+        .key-color { width: 24px; height: 24px; border-radius: 50%; }
+        h1 { text-align: center; color: #333; font-size: 28px; margin-bottom: 10px; }
+        .info { text-align: center; color: #666; font-size: 16px; margin-bottom: 30px; }
+        .upload-area {
+            border: 2px dashed #ccc; padding: 30px; text-align: center; 
+            background: white; margin-bottom: 20px; cursor: pointer;
+            border-radius: 8px; transition: all 0.3s;
+        }
+        .upload-area:hover { border-color: #4CAF50; background: #f8fff8; }
+        .upload-area.dragover { border-color: #4CAF50; background: #e8f5e8; }
+        #status { text-align: center; margin: 10px 0; font-weight: bold; color: #4CAF50; }
+        #debug { 
+            background: #f5f5f5; padding: 15px; border-radius: 5px; 
+            font-family: monospace; font-size: 12px; max-height: 500px; overflow-y: auto;
+            margin-bottom: 20px;
+        }
+        .csv-example {
+            background: #e8f5e8; padding: 15px; border-radius: 5px; font-family: monospace;
+            font-size: 12px; margin-bottom: 20px;
+        }
+        #downloadPngWhite, #downloadPngTransparent, #downloadAllYearsWhite, #downloadAllYearsTransparent {
+            padding: 10px 16px; border-radius: 4px; border: none;
+            background: #4CAF50; color: white; cursor: pointer; font-size: 14px;
+            font-weight: 500;
+        }
+        #downloadPngWhite:hover, #downloadPngTransparent:hover, 
+        #downloadAllYearsWhite:hover, #downloadAllYearsTransparent:hover { 
+            background: #43a047; 
+        }
+        #downloadPngTransparent, #downloadAllYearsTransparent { 
+            background: #2196F3; 
+        }
+        #downloadPngTransparent:hover, #downloadAllYearsTransparent:hover { 
+            background: #1976D2; 
+        }
+        #yearSelect { margin: 10px 0; padding: 8px; font-size: 16px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Strava Year in Pixels</h1>
+        <p class="info">JFMAMJJASOND • Celle colorate uniche • Bianca=riposo</p>
+        
+        <div class="csv-example">
+            <strong>📋 activities.csv Strava italiano</strong><br>
+            <code>Col 18 (idx 17): metri ÷1000 = km | Col 21 (idx 20): metri D+</code>
+        </div>
+        
+        <select id="yearSelect">
+            <option value="">Carica CSV per selezionare anno</option>
+        </select>
+        
+        <div class="upload-area" id="uploadArea">
+            <p>📁 <strong>Trascina activities.csv qui</strong> o clicca per selezionare</p>
+            <input type="file" id="csvFile" accept=".csv" style="display: none;">
+        </div>
+        <div id="status">Carica il tuo activities.csv per iniziare...</div>
+        <div id="debug"></div>
+        
+        <canvas id="yearCanvas" width="1400" height="1100"></canvas>
+        <div style="display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;">
+            <button id="downloadPngWhite">📸 Anno singolo (sfondo bianco)</button>
+            <button id="downloadPngTransparent">🎨 Anno singolo (trasparente)</button>
+            <button id="downloadAllYearsWhite">📊 Tutti gli anni (sfondo bianco)</button>
+            <button id="downloadAllYearsTransparent">🌈 Tutti gli anni (trasparente)</button>
+        </div>
+        <div class="key" id="legend"></div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('yearCanvas');
+        const ctx = canvas.getContext('2d');
+        let year = 2025;
+        const cellSize = 26;
+        const months = ['J','F','M','A','M','J','J','A','S','O','N','D'];
+        
+        let dailyActivities = {};
+        const debug = document.getElementById('debug');
+        const status = document.getElementById('status');
+
+        window.stats = { 
+            activeDays: 0, 
+            totalKm: 0, 
+            totalElev: 0, 
+            restDays: 0, 
+            longestStreak: 0, 
+            streakDates: '',
+            // ✅ Record personali PER TIPO
+            recordsByType: {},
+            // ✅ Distribuzione distanze PER TIPO
+            distByType: {}
+        };
+        window.statsByType = {};
+        window.typeColors = {};
+        window.typeEmojis = {};
+        window.allActivitiesData = [];
+
+        function parseCSVLine(line) {
+            const cols = [];
+            let current = '';
+            let inQuotes = false;
+            let i = 0;
+            
+            while (i < line.length) {
+                const char = line[i];
+                const nextChar = line[i + 1];
+                
+                if (char === '"') {
+                    if (inQuotes && nextChar === '"') {
+                        // Escaped quote inside quotes: ""
+                        current += '"';
+                        i += 2;
+                        continue;
+                    } else {
+                        // Toggle quote state
+                        inQuotes = !inQuotes;
+                        i++;
+                        continue;
+                    }
+                }
+                
+                if (char === ',' && !inQuotes) {
+                    // Column separator
+                    cols.push(current);
+                    current = '';
+                    i++;
+                    continue;
+                }
+                
+                // Regular character
+                current += char;
+                i++;
+            }
+            
+            // Push last column
+            cols.push(current);
+            
+            return cols;
+        }
+
+        function parseStravaDate(dateStr) {
+            const match = dateStr.match(/(\d{1,2})\s+(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+(\d{4})/i);
+            if (match) {
+                const day = match[1].padStart(2, '0');
+                const monthStr = match[2].toLowerCase();
+                const yearMatch = match[3];
+                const monthMap = {
+                    'gen': '01', 'feb': '02', 'mar': '03', 'apr': '04', 
+                    'mag': '05', 'giu': '06', 'lug': '07', 'ago': '08',
+                    'set': '09', 'ott': '10', 'nov': '11', 'dic': '12'
+                };
+                const month = monthMap[monthStr];
+                if (month) return `${yearMatch}-${month}-${day}`;
+            }
+            return null;
+        }
+
+        function parseCSV(csvText) {
+            debug.innerHTML = '<strong>🚀 PARSER Strava activities.csv</strong><br>';
+            
+            // Parse CSV handling newlines inside quoted fields
+            const rows = [];
+            let currentRow = [];
+            let currentField = '';
+            let inQuotes = false;
+            
+            for (let i = 0; i < csvText.length; i++) {
+                const char = csvText[i];
+                const nextChar = csvText[i + 1];
+                
+                if (char === '"') {
+                    if (inQuotes && nextChar === '"') {
+                        currentField += '"';
+                        i++;
+                    } else {
+                        inQuotes = !inQuotes;
+                    }
+                } else if (char === ',' && !inQuotes) {
+                    currentRow.push(currentField);
+                    currentField = '';
+                } else if (char === '\n' && !inQuotes) {
+                    currentRow.push(currentField);
+                    if (currentRow.length > 0) rows.push(currentRow);
+                    currentRow = [];
+                    currentField = '';
+                } else if (char === '\r') {
+                    // Skip carriage return
+                    continue;
+                } else {
+                    currentField += char;
+                }
+            }
+            
+            // Push last field and row
+            if (currentField || currentRow.length > 0) {
+                currentRow.push(currentField);
+                if (currentRow.length > 0) rows.push(currentRow);
+            }
+            
+            if (rows.length < 2) return [];
+            
+            const headers = rows[0];
+            debug.innerHTML += `CSV: ${headers.length} colonne, ${rows.length - 1} righe<br>`;
+            
+            const dateCol = 1;
+            const sportCol = 3;
+            const distCol = 17;
+            const elevCol = 20;
+            const timeCol = 5; // ✅ Prima occorrenza "Tempo trascorso" (provo col 5)
+
+            debug.innerHTML += `📍 "${headers[distCol]}" (col 18) | "${headers[elevCol]}" (col 21) | "${headers[timeCol]}" (col ${timeCol+1}) TEMPO<br><br>`;
+
+            const data = [];
+            const typeCounter = {};
+            const allTypesCounter = {};
+            const skipReasons = {};
+            let validRows = 0, skipped = 0, wrongYear = 0;
+
+            debug.innerHTML += `<strong>🔍 Prime 3 righe:</strong><br>`;
+            for (let i = 1; i <= Math.min(3, rows.length - 1); i++) {
+                const cols = rows[i];
+                debug.innerHTML += `#${i}: ${cols.length} col | Data="${cols[1]?.substring(0,20)}" | Tipo="${cols[3]}" | Dist="${cols[17]}" | Elev="${cols[20]}"<br>`;
+            }
+            debug.innerHTML += `<br>`;
+
+            // Parse all rows
+            for (let rowIndex = 1; rowIndex < rows.length; rowIndex++) {
+                const cols = rows[rowIndex];
+                
+                if (cols.length < 22) {
+                    skipReasons['Colonne < 22'] = (skipReasons['Colonne < 22'] || 0) + 1;
+                    if (skipped < 3) {
+                        debug.innerHTML += `⚠️ Riga ${rowIndex}: solo ${cols.length} col | Data="${cols[1]?.substring(0,20)}" | Tipo="${cols[3]}"<br>`;
+                    }
+                    skipped++;
+                    continue;
+                }
+
+                const dateStr = cols[dateCol]?.trim() || '';
+                const tipo = cols[sportCol]?.trim() || '';
+                
+                const tipoLabel = tipo || '(vuoto)';
+                allTypesCounter[tipoLabel] = (allTypesCounter[tipoLabel] || 0) + 1;
+                
+                if (!tipo) {
+                    skipReasons['Tipo vuoto'] = (skipReasons['Tipo vuoto'] || 0) + 1;
+                    skipped++;
+                    continue;
+                }
+
+                const dateNorm = parseStravaDate(dateStr);
+                if (!dateNorm) {
+                    skipReasons['Data non parsabile'] = (skipReasons['Data non parsabile'] || 0) + 1;
+                    skipped++;
+                    continue;
+                }
+                
+                const activityYear = parseInt(dateNorm.split('-')[0]);
+                
+                if (activityYear !== year) {
+                    wrongYear++;
+                    continue;
+                }
+
+                const distanceStr = cols[distCol]?.replace(/"/g, '').trim() || '0';
+                const elevStr = cols[elevCol]?.replace(/"/g, '').trim() || '0';
+                const timeStr = cols[timeCol]?.replace(/"/g, '').trim() || '0';
+                
+                const distanceMeters = parseFloat(distanceStr.replace(',', '.'));
+                const distanceKm = distanceMeters / 1000;
+                const elevGain = parseFloat(elevStr.replace(',', '.')) || 0;
+                
+                // ✅ Parse tempo: supporta sia secondi numerici che formato HH:MM:SS
+                let elapsedSeconds = 0;
+                if (timeStr.includes(':')) {
+                    // Formato HH:MM:SS o MM:SS
+                    const parts = timeStr.split(':').map(p => parseInt(p) || 0);
+                    if (parts.length === 3) {
+                        // HH:MM:SS
+                        elapsedSeconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+                    } else if (parts.length === 2) {
+                        // MM:SS
+                        elapsedSeconds = parts[0] * 60 + parts[1];
+                    }
+                } else {
+                    // Formato numerico (secondi)
+                    elapsedSeconds = parseFloat(timeStr.replace(',', '.')) || 0;
+                }
+                const elapsedMinutes = Math.round(elapsedSeconds / 60);
+
+                if (isNaN(distanceKm)) {
+                    skipReasons['Distanza NaN'] = (skipReasons['Distanza NaN'] || 0) + 1;
+                    skipped++;
+                    continue;
+                }
+
+                typeCounter[tipo] = (typeCounter[tipo] || 0) + 1;
+
+                data.push({
+                    data: dateNorm,
+                    tipo,
+                    km: distanceKm,
+                    dislivello: elevGain,
+                    minuti: elapsedMinutes
+                });
+                
+                validRows++;
+                if (validRows <= 10) {
+                    debug.innerHTML += `✅ #${validRows} ${tipo} ${dateNorm} → ${distanceKm.toFixed(2)}km ${elevGain.toFixed(0)}m D+ ⏱️ ${elapsedMinutes}min<br>`;
+                }
+            }
+
+            // Summary
+            debug.innerHTML += `<br><strong>📊 ${validRows} attività ${year}</strong><br>`;
+            debug.innerHTML += `❌ ${skipped} saltate | ${wrongYear} altri anni<br>`;
+            debug.innerHTML += `✔️ Elaborate: ${validRows + skipped + wrongYear} / ${rows.length - 1}<br>`;
+            
+            if (Object.keys(skipReasons).length > 0) {
+                debug.innerHTML += `<br><strong>📋 Motivi scarto (${skipped}):</strong><br>`;
+                Object.entries(skipReasons).forEach(([reason, count]) => {
+                    debug.innerHTML += `   ❌ ${reason}: ${count}<br>`;
+                });
+            }
+            
+            debug.innerHTML += `<br><strong>🔢 Conteggio ${year}:</strong><br>`;
+            Object.entries(typeCounter).sort((a,b) => b[1] - a[1]).forEach(([tipo, count]) => {
+                debug.innerHTML += `   ✅ ${tipo}: ${count}<br>`;
+            });
+            
+            debug.innerHTML += `<br><strong>📋 Tutti i tipi (tutti gli anni):</strong><br>`;
+            Object.entries(allTypesCounter).sort((a,b) => b[1] - a[1]).forEach(([tipo, count]) => {
+                const currentYearCount = typeCounter[tipo] || 0;
+                const otherYears = count - currentYearCount;
+                debug.innerHTML += `   ${tipo}: ${count} (${currentYearCount} nel ${year}`;
+                if (otherYears > 0) debug.innerHTML += `, ${otherYears} altri`;
+                debug.innerHTML += `)<br>`;
+            });
+            
+            buildTypeMaps([...new Set(data.map(d => d.tipo))]);
+            
+            // ✅ Salva TUTTI i dati (tutti gli anni) globalmente
+            window.allActivitiesData = data;
+            
+            return data;
+        }
+        
+        // ✅ NUOVO: Parsa tutti gli anni senza filtro
+        function parseCSVAllYears(csvText) {
+            debug.innerHTML = '<strong>🚀 PARSER Strava (tutti gli anni)</strong><br>';
+            
+            const rows = [];
+            let currentRow = [];
+            let currentField = '';
+            let inQuotes = false;
+            
+            for (let i = 0; i < csvText.length; i++) {
+                const char = csvText[i];
+                const nextChar = csvText[i + 1];
+                
+                if (char === '"') {
+                    if (inQuotes && nextChar === '"') {
+                        currentField += '"';
+                        i++;
+                    } else {
+                        inQuotes = !inQuotes;
+                    }
+                } else if (char === ',' && !inQuotes) {
+                    currentRow.push(currentField);
+                    currentField = '';
+                } else if (char === '\n' && !inQuotes) {
+                    currentRow.push(currentField);
+                    if (currentRow.length > 0) rows.push(currentRow);
+                    currentRow = [];
+                    currentField = '';
+                } else if (char === '\r') {
+                    continue;
+                } else {
+                    currentField += char;
+                }
+            }
+            
+            if (currentField || currentRow.length > 0) {
+                currentRow.push(currentField);
+                if (currentRow.length > 0) rows.push(currentRow);
+            }
+            
+            if (rows.length < 2) return [];
+            
+            const headers = rows[0];
+            const dateCol = 1, sportCol = 3, distCol = 17, elevCol = 20, timeCol = 5; // ✅ Col 5 invece di 16
+            
+            const allData = [];
+            const yearCount = {};
+            let skipped = 0;
+            
+            for (let rowIndex = 1; rowIndex < rows.length; rowIndex++) {
+                const cols = rows[rowIndex];
+                if (cols.length < 22) { skipped++; continue; }
+                
+                const dateStr = cols[dateCol]?.trim() || '';
+                const tipo = cols[sportCol]?.trim() || '';
+                if (!tipo) { skipped++; continue; }
+                
+                const dateNorm = parseStravaDate(dateStr);
+                if (!dateNorm) { skipped++; continue; }
+                
+                const distanceStr = cols[distCol]?.replace(/"/g, '').trim() || '0';
+                const elevStr = cols[elevCol]?.replace(/"/g, '').trim() || '0';
+                const timeStr = cols[timeCol]?.replace(/"/g, '').trim() || '0'; // ✅ Parsa tempo
+                
+                const distanceMeters = parseFloat(distanceStr.replace(',', '.'));
+                const distanceKm = distanceMeters / 1000;
+                const elevGain = parseFloat(elevStr.replace(',', '.')) || 0;
+                
+                // ✅ Parse tempo come nella funzione principale
+                let elapsedSeconds = 0;
+                if (timeStr.includes(':')) {
+                    const parts = timeStr.split(':').map(p => parseInt(p) || 0);
+                    if (parts.length === 3) {
+                        elapsedSeconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+                    } else if (parts.length === 2) {
+                        elapsedSeconds = parts[0] * 60 + parts[1];
+                    }
+                } else {
+                    elapsedSeconds = parseFloat(timeStr.replace(',', '.')) || 0;
+                }
+                const elapsedMinutes = Math.round(elapsedSeconds / 60);
+                
+                if (isNaN(distanceKm)) { skipped++; continue; }
+                
+                const activityYear = parseInt(dateNorm.split('-')[0]);
+                yearCount[activityYear] = (yearCount[activityYear] || 0) + 1;
+                
+                allData.push({
+                    data: dateNorm,
+                    tipo,
+                    km: distanceKm,
+                    dislivello: elevGain,
+                    minuti: elapsedMinutes // ✅ Aggiungo minuti
+                });
+            }
+            
+            debug.innerHTML += `✅ ${allData.length} attività totali parsate<br>`;
+            debug.innerHTML += `❌ ${skipped} righe saltate<br><br>`;
+            debug.innerHTML += `<strong>📅 Attività per anno:</strong><br>`;
+            
+            const sortedYears = Object.entries(yearCount).sort((a,b) => b[0] - a[0]);
+            sortedYears.forEach(([y, count]) => {
+                debug.innerHTML += `   ${y}: ${count} attività<br>`;
+            });
+            
+            // ✅ Popola il selettore anni dinamicamente
+            populateYearSelector(Object.keys(yearCount).map(y => parseInt(y)));
+            
+            return allData;
+        }
+        
+        // ✅ Popola dinamicamente il selettore con gli anni trovati
+        function populateYearSelector(years) {
+            const yearSelect = document.getElementById('yearSelect');
+            yearSelect.innerHTML = ''; // Pulisci
+            
+            // Ordina anni dal più recente al più vecchio
+            years.sort((a, b) => b - a);
+            
+            years.forEach((y, index) => {
+                const option = document.createElement('option');
+                option.value = y;
+                option.textContent = y;
+                if (index === 0) option.selected = true; // Seleziona anno più recente
+                yearSelect.appendChild(option);
+            });
+            
+            // Aggiorna la variabile year con l'anno più recente
+            if (years.length > 0) {
+                year = years[0];
+            }
+        }
+        
+        // ✅ Nuova funzione: filtra e visualizza dati per anno specifico
+        function filterAndDisplayYear(yearToShow) {
+            if (window.allActivitiesData.length === 0) {
+                status.textContent = '⚠️ Carica prima il CSV';
+                return;
+            }
+            
+            // Filtra solo attività dell'anno selezionato
+            const yearData = window.allActivitiesData.filter(activity => {
+                const activityYear = parseInt(activity.data.split('-')[0]);
+                return activityYear === yearToShow;
+            });
+            
+            // Ricalcola colori per i tipi presenti in questo anno
+            const typesInYear = [...new Set(yearData.map(d => d.tipo))];
+            buildTypeMaps(typesInYear);
+            
+            // Aggrega e visualizza
+            aggregateData(yearData);
+            renderGrid();
+            
+            status.textContent = `✅ ${yearData.length} attività ${yearToShow}`;
+        }
+
+        function buildTypeMaps(allTypes) {
+            // 🎨 PALETTE PERSONALIZZATA - COLORI UNICI PER OGNI ATTIVITÀ
+            const colors = {
+                'Corsa': '#004e98',              // Steel Azure - BLU
+                'Ciclismo': '#4da167',            // Shamrock - VERDE
+                'Sci nordico': '#f55d3e',         // Tomato - ROSSO/ARANCIO
+                'Escursione': '#ffc857',          // Golden Pollen - GIALLO
+                'Allenamento generico': '#0c1713', // Onyx - GRIGIO SCURO
+                'Camminata': '#9d4edd',           // VIOLA (ben distinto da tutti)
+                'MTB': '#2d6a4f',                 // Verde scuro (diverso da Ciclismo)
+                'Nuoto': '#0077b6'                // Blu acqua (diverso da Corsa)
+            };
+            const emojis = {
+                'Corsa': '🏃‍♂️', 'Ciclismo': '🚴‍♂️', 'Sci nordico': '⛷️', 
+                'Escursione': '🥾', 'Allenamento generico': '💪', 'Camminata': '🚶‍♂️',
+                'Nuoto': '🏊‍♂️', 'MTB': '🚵‍♂️'
+            };
+            
+            // Colori fallback dalla palette + varianti per attività nuove
+            const uniqueColors = [
+                '#f55d3e',  // Tomato
+                '#4da167',  // Shamrock
+                '#ffc857',  // Golden Pollen
+                '#004e98',  // Steel Azure
+                '#0c1713',  // Onyx
+                '#9d4edd',  // Viola
+                '#2d6a4f',  // Verde scuro
+                '#0077b6',  // Blu acqua
+                '#e63946',  // Rosso ciliegia
+                '#06ffa5'   // Verde menta
+            ];
+            let colorIdx = 0;
+            
+            window.typeColors = {}; window.typeEmojis = {};
+            allTypes.forEach(tipo => {
+                const tl = tipo.toLowerCase();
+                
+                if (colors[tipo]) {
+                    // Colore specifico assegnato
+                    window.typeColors[tipo] = colors[tipo];
+                } else if (tl.includes('corsa') || tl.includes('run')) {
+                    window.typeColors[tipo] = '#004e98'; // Steel Azure
+                } else if (tl.includes('bici') || tl.includes('bike') || tl.includes('cicl')) {
+                    window.typeColors[tipo] = '#4da167'; // Shamrock
+                } else if (tl.includes('sci') || tl.includes('ski')) {
+                    window.typeColors[tipo] = '#f55d3e'; // Tomato
+                } else if (tl.includes('escurs') || tl.includes('hike') || tl.includes('trail')) {
+                    window.typeColors[tipo] = '#ffc857'; // Golden Pollen
+                } else if (tl.includes('cammin') || tl.includes('walk')) {
+                    window.typeColors[tipo] = '#9d4edd'; // Viola (ben distinto)
+                } else if (tl.includes('nuoto') || tl.includes('swim')) {
+                    window.typeColors[tipo] = '#0077b6'; // Blu acqua
+                } else {
+                    // Colore unico dalla palette estesa
+                    window.typeColors[tipo] = uniqueColors[colorIdx % uniqueColors.length];
+                    colorIdx++;
+                }
+                
+                window.typeEmojis[tipo] = emojis[tipo] || '🔥';
+            });
+            updateLegend();
+        }
+
+        function updateLegend() {
+            const legend = document.getElementById('legend');
+            legend.innerHTML = '<div class="key-item"><div class="key-color" style="background:#fff;border:1px solid #ccc;"></div>Riposo</div>';
+            Object.entries(window.typeColors).forEach(([tipo,color]) => {
+                const div = document.createElement('div');
+                div.className = 'key-item';
+                div.innerHTML = `<div class="key-color" style="background:${color}"></div>${window.typeEmojis[tipo]} ${tipo}`;
+                legend.appendChild(div);
+            });
+        }
+
+        function aggregateData(data) {
+            dailyActivities = {};
+            window.statsByType = {};
+            window.stats.totalKm = 0;
+            window.stats.totalElev = 0;
+            
+            // Reset records e distribuzione PER TIPO
+            window.stats.recordsByType = {};
+            window.stats.distByType = {};
+            
+            data.forEach(a => {
+                if (!dailyActivities[a.data]) dailyActivities[a.data] = [];
+                dailyActivities[a.data].push({tipo: a.tipo, km: a.km});
+                    
+                if (!window.statsByType[a.tipo]) {
+                    window.statsByType[a.tipo] = {count: 0, km: 0, elev: 0, minuti: 0}; // ✅ Aggiungo minuti
+                }
+                window.statsByType[a.tipo].count++;
+                window.statsByType[a.tipo].km += a.km;
+                window.statsByType[a.tipo].elev += a.dislivello;
+                window.statsByType[a.tipo].minuti += a.minuti; // ✅ Somma minuti
+                window.stats.totalKm += a.km;
+                window.stats.totalElev += a.dislivello;
+                
+                // ✅ Record PER TIPO
+                if (!window.stats.recordsByType[a.tipo]) {
+                    window.stats.recordsByType[a.tipo] = {
+                        longestKm: { km: 0, date: '' },
+                        maxElev: { elev: 0, date: '' }
+                    };
+                }
+                
+                if (a.km > window.stats.recordsByType[a.tipo].longestKm.km) {
+                    window.stats.recordsByType[a.tipo].longestKm = {
+                        km: a.km,
+                        date: a.data
+                    };
+                }
+                
+                if (a.dislivello > window.stats.recordsByType[a.tipo].maxElev.elev) {
+                    window.stats.recordsByType[a.tipo].maxElev = {
+                        elev: a.dislivello,
+                        date: a.data
+                    };
+                }
+                
+                // ✅ Distribuzione PER TIPO
+                if (!window.stats.distByType[a.tipo]) {
+                    window.stats.distByType[a.tipo] = {
+                        '0-5km': 0,
+                        '5-10km': 0,
+                        '10-20km': 0,
+                        '20-42km': 0,
+                        'ultra42+': 0
+                    };
+                }
+                
+                if (a.km < 5) {
+                    window.stats.distByType[a.tipo]['0-5km']++;
+                } else if (a.km < 10) {
+                    window.stats.distByType[a.tipo]['5-10km']++;
+                } else if (a.km < 20) {
+                    window.stats.distByType[a.tipo]['10-20km']++;
+                } else if (a.km < 42) {
+                    window.stats.distByType[a.tipo]['20-42km']++;
+                } else {
+                    window.stats.distByType[a.tipo]['ultra42+']++;
+                }
+            });
+            
+            window.stats.activeDays = Object.keys(dailyActivities).length;
+            window.stats.restDays = 365 - window.stats.activeDays;
+            
+            // ✅ Calcola streak più lungo
+            calculateLongestStreak();
+            
+            debug.innerHTML += '<br><strong>✅ TOTALI:</strong><br>';
+            Object.entries(window.statsByType).forEach(([tipo,s]) => {
+                debug.innerHTML += `${window.typeEmojis[tipo] || ''} ${tipo}: ${s.count} att.`;
+                
+                // ✅ Se km molto bassi, mostra minuti invece
+                if (s.km < 0.1 && s.minuti > 0) {
+                    const ore = Math.floor(s.minuti / 60);
+                    const min = s.minuti % 60;
+                    if (ore > 0) {
+                        debug.innerHTML += ` | ⏱️ ${ore}h ${min}min`;
+                    } else {
+                        debug.innerHTML += ` | ⏱️ ${min}min`;
+                    }
+                } else if (s.km >= 0.1) {
+                    debug.innerHTML += ` | ${s.km.toFixed(1)}km`;
+                } else {
+                    debug.innerHTML += ` | 0.0km`;
+                }
+                
+                if (s.elev > 0) debug.innerHTML += ` | ${Math.round(s.elev)}m D+`;
+                debug.innerHTML += '<br>';
+            });
+            debug.innerHTML += `<strong>🎯 TOTALE: ${window.stats.totalKm.toFixed(1)}km | ${Math.round(window.stats.totalElev)}m D+ | ${window.stats.activeDays} giorni attivi</strong><br>`;
+            debug.innerHTML += `<strong>🔥 Streak migliore: ${window.stats.longestStreak} giorni ${window.stats.streakDates}</strong>`;
+        }
+        
+        // ✅ Calcola lo streak più lungo di giorni consecutivi
+        function calculateLongestStreak() {
+            const activeDates = Object.keys(dailyActivities).sort();
+            
+            if (activeDates.length === 0) {
+                window.stats.longestStreak = 0;
+                window.stats.streakDates = '';
+                return;
+            }
+            
+            let currentStreak = 1;
+            let longestStreak = 1;
+            let streakStart = activeDates[0];
+            let streakEnd = activeDates[0];
+            let bestStreakStart = activeDates[0];
+            let bestStreakEnd = activeDates[0];
+            
+            for (let i = 1; i < activeDates.length; i++) {
+                const prevDate = new Date(activeDates[i - 1]);
+                const currDate = new Date(activeDates[i]);
+                const diffDays = Math.round((currDate - prevDate) / (1000 * 60 * 60 * 24));
+                
+                if (diffDays === 1) {
+                    // Giorni consecutivi
+                    currentStreak++;
+                    streakEnd = activeDates[i];
+                } else {
+                    // Streak interrotto
+                    if (currentStreak > longestStreak) {
+                        longestStreak = currentStreak;
+                        bestStreakStart = streakStart;
+                        bestStreakEnd = streakEnd;
+                    }
+                    currentStreak = 1;
+                    streakStart = activeDates[i];
+                    streakEnd = activeDates[i];
+                }
+            }
+            
+            // Controlla l'ultimo streak
+            if (currentStreak > longestStreak) {
+                longestStreak = currentStreak;
+                bestStreakStart = streakStart;
+                bestStreakEnd = streakEnd;
+            }
+            
+            window.stats.longestStreak = longestStreak;
+            
+            // Formatta date per visualizzazione
+            if (longestStreak > 1) {
+                const startFormatted = formatDateShort(bestStreakStart);
+                const endFormatted = formatDateShort(bestStreakEnd);
+                window.stats.streakDates = `(${startFormatted} - ${endFormatted})`;
+            } else {
+                window.stats.streakDates = '';
+            }
+        }
+        
+        // Formatta data in formato breve (es: "15 Apr")
+        function formatDateShort(dateStr) {
+            const date = new Date(dateStr);
+            const day = date.getDate();
+            const monthNames = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
+            const month = monthNames[date.getMonth()];
+            return `${day} ${month}`;
+        }
+
+        function drawCell(x, y, activities) {
+            const radius = cellSize / 2 - 0.5;
+            const centerX = x + radius;
+            const centerY = y + radius;
+            
+            ctx.save();
+            
+            if (!activities || activities.length === 0) {
+                // Riposo - cerchio bianco
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+                ctx.fillStyle = '#ffffff';
+                ctx.fill();
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = '#d0d0d0';
+                ctx.stroke();
+            } else if (activities.length === 1) {
+                // Una sola attività - colore pieno
+                const color = window.typeColors[activities[0].tipo];
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+                ctx.fillStyle = color || '#888';
+                ctx.fill();
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = '#d0d0d0';
+                ctx.stroke();
+            } else {
+                // Più attività - controlla se sono tutte dello stesso tipo
+                const uniqueTypes = [...new Set(activities.map(a => a.tipo))];
+                
+                if (uniqueTypes.length === 1) {
+                    // ✅ STESSO TIPO (es: 2 corse) → cerchio pieno + numero
+                    const tipo = uniqueTypes[0];
+                    const count = activities.length;
+                    const color = window.typeColors[tipo] || '#888';
+                    
+                    ctx.beginPath();
+                    ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+                    ctx.fillStyle = color;
+                    ctx.fill();
+                    
+                    // Testo "2x" bianco al centro
+                    ctx.fillStyle = 'white';
+                    ctx.font = 'bold 11px Helvetica';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+                    ctx.shadowBlur = 2;
+                    ctx.shadowOffsetX = 0.5;
+                    ctx.shadowOffsetY = 0.5;
+                    ctx.fillText(`${count}x`, centerX, centerY);
+                    
+                    ctx.lineWidth = 1;
+                    ctx.strokeStyle = '#d0d0d0';
+                    ctx.stroke();
+                } else {
+                    // ✅ TIPI DIVERSI (es: corsa + bici) → spicchi proporzionali
+                    const totalKm = activities.reduce((sum, act) => sum + act.km, 0);
+                    let startAngle = -Math.PI / 2;
+                    
+                    activities.forEach(activity => {
+                        const sliceAngle = (activity.km / totalKm) * 2 * Math.PI;
+                        const endAngle = startAngle + sliceAngle;
+                        
+                        ctx.beginPath();
+                        ctx.moveTo(centerX, centerY);
+                        ctx.arc(centerX, centerY, radius, startAngle, endAngle);
+                        ctx.closePath();
+                        const color = window.typeColors[activity.tipo] || '#888';
+                        ctx.fillStyle = color;
+                        ctx.fill();
+                        
+                        startAngle = endAngle;
+                    });
+                    
+                    ctx.lineWidth = 1;
+                    ctx.strokeStyle = '#d0d0d0';
+                    ctx.beginPath();
+                    ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+                    ctx.stroke();
+                }
+            }
+            
+            ctx.restore();
+        }
+
+        function renderGrid() {
+            ctx.fillStyle = '#fafafa';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            const startX = 80, startY = 120;
+            
+            ctx.fillStyle = '#333'; 
+            ctx.font = 'bold 22px Helvetica'; 
+            ctx.textAlign = 'center'; 
+            ctx.textBaseline = 'middle';
+            months.forEach((month, m) => {
+                ctx.fillText(month, startX + m * cellSize + cellSize / 2, 90); // ✅ Da 60 a 90
+            });
+
+            ctx.fillStyle = '#666'; 
+            ctx.font = 'bold 18px Helvetica'; 
+            ctx.textAlign = 'right';
+            for (let day = 1; day <= 31; day++) {
+                ctx.fillText(day.toString(), 65, startY + (day - 1) * cellSize + cellSize / 2);
+            }
+
+            for (let month = 0; month < 12; month++) {
+                for (let day = 1; day <= 31; day++) {
+                    const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                    const activities = dailyActivities[dateKey] || [];
+                    drawCell(startX + month * cellSize, startY + (day - 1) * cellSize, activities);
+                }
+            }
+
+            const infoX = startX + 12 * cellSize + 50;
+            ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = '#333'; 
+            ctx.font = 'bold 20px Helvetica';
+            ctx.fillText(`Riepilogo ${year}`, infoX, startY);
+            
+            ctx.font = '16px Helvetica'; let offsetY = startY + 40;
+            Object.entries(window.statsByType).forEach(([tipo, s]) => {
+                ctx.fillStyle = window.typeColors[tipo] || '#333';
+                ctx.fillText(`${window.typeEmojis[tipo] || '🔵'} ${tipo}: ${s.count}`, infoX, offsetY);
+                
+                // ✅ Se km molto bassi (< 0.1), mostra minuti invece
+                if (s.km < 0.1 && s.minuti > 0) {
+                    const ore = Math.floor(s.minuti / 60);
+                    const min = s.minuti % 60;
+                    const timeStr = ore > 0 ? `${ore}h ${min}min` : `${min}min`;
+                    ctx.fillText(`⏱️ ${timeStr}`, infoX, offsetY + 20);
+                } else {
+                    ctx.fillText(`${s.km.toFixed(1)}km`, infoX, offsetY + 20);
+                }
+                
+                if (s.elev > 0) ctx.fillText(`⛰️ ${Math.round(s.elev)}m`, infoX, offsetY + 40);
+                offsetY += s.elev > 0 ? 70 : 50;
+            });
+            
+            // ✅ LAYOUT ORIZZONTALE: Stats a sinistra, confronto a destra
+            const col1X = infoX; // Colonna sinistra (stats anno corrente)
+            const col2X = infoX + 155; // ✅ Ancora più vicino (da 175 a 155)
+            
+            offsetY += 15;
+            
+            // Calcola confronto
+            const comparison = window.allActivitiesData && window.allActivitiesData.length > 0 
+                ? calculateYearComparison(year) 
+                : null;
+            
+            // Header
+            ctx.fillStyle = '#333';
+            ctx.font = 'bold 16px Helvetica';
+            ctx.fillText(`📊 ${year}:`, col1X, offsetY);
+            if (comparison) {
+                ctx.fillText(`📊 vs ${comparison.previousYear}:`, col2X, offsetY);
+            }
+            offsetY += 25;
+            
+            // ✅ Riga 1: Km totali + confronto km
+            ctx.font = 'bold 16px Helvetica';
+            ctx.fillStyle = '#333';
+            ctx.fillText(`📋 ${window.stats.totalKm.toFixed(1)}km`, col1X, offsetY);
+            
+            if (comparison) {
+                const kmDiff = comparison.kmDiff;
+                const kmColor = kmDiff >= 0 ? '#4da167' : '#f55d3e';
+                ctx.fillStyle = kmColor;
+                ctx.font = '14px Helvetica';
+                const kmSymbol = kmDiff >= 0 ? '↗' : '↘';
+                ctx.fillText(`${kmSymbol} ${Math.abs(kmDiff).toFixed(1)}km (${comparison.kmPercent})`, col2X, offsetY);
+            }
+            offsetY += 25;
+            
+            // ✅ Riga 2: Dislivello + confronto dislivello
+            if (window.stats.totalElev > 0) {
+                ctx.fillStyle = '#333';
+                ctx.font = 'bold 16px Helvetica';
+                ctx.fillText(`⛰️ ${Math.round(window.stats.totalElev)}m D+`, col1X, offsetY);
+                
+                if (comparison && comparison.elevDiff !== undefined) {
+                    const elevDiff = comparison.elevDiff;
+                    const elevColor = elevDiff >= 0 ? '#4da167' : '#f55d3e';
+                    ctx.fillStyle = elevColor;
+                    ctx.font = '14px Helvetica';
+                    const elevSymbol = elevDiff >= 0 ? '↗' : '↘';
+                    ctx.fillText(`${elevSymbol} ${Math.abs(elevDiff).toFixed(0)}m (${comparison.elevPercent})`, col2X, offsetY);
+                }
+                offsetY += 25;
+            }
+            
+            // ✅ Riga 3: Giorni attivi + confronto attività
+            ctx.fillStyle = '#333';
+            ctx.font = '14px Helvetica';
+            ctx.fillText(`📅 ${window.stats.activeDays} giorni attivi`, col1X, offsetY);
+            
+            if (comparison) {
+                const actDiff = comparison.activityDiff;
+                const actColor = actDiff >= 0 ? '#4da167' : '#f55d3e';
+                ctx.fillStyle = actColor;
+                const actSymbol = actDiff >= 0 ? '↗' : '↘';
+                ctx.fillText(`${actSymbol} ${Math.abs(actDiff)} attività (${comparison.activityPercent})`, col2X, offsetY);
+            }
+            offsetY += 20;
+            
+            // ✅ Riga 4: Giorni riposo
+            ctx.fillStyle = '#333';
+            ctx.font = '14px Helvetica';
+            ctx.fillText(`😴 ${window.stats.restDays} giorni riposo`, col1X, offsetY);
+            offsetY += 25;
+            
+            // ✅ Riga 5: Streak
+            if (window.stats.longestStreak > 1) {
+                ctx.font = 'bold 14px Helvetica';
+                ctx.fillStyle = '#f55d3e';
+                ctx.fillText(`🔥 Streak: ${window.stats.longestStreak} giorni`, col1X, offsetY);
+                offsetY += 18;
+                ctx.font = '12px Helvetica';
+                ctx.fillStyle = '#666';
+                ctx.fillText(window.stats.streakDates, col1X + 5, offsetY);
+                offsetY += 30;
+            } else {
+                offsetY += 10;
+            }
+            
+            // ✅ RECORD PERSONALI (top 2 tipi di attività)
+            ctx.fillStyle = '#333';
+            ctx.font = 'bold 15px Helvetica';
+            ctx.fillText('🏆 Record:', col1X, offsetY);
+            offsetY += 22;
+            
+            // Mostra record per i 2 tipi principali (più km totali)
+            const topTypes = Object.entries(window.statsByType)
+                .sort((a, b) => b[1].km - a[1].km)
+                .slice(0, 2);
+            
+            ctx.font = '13px Helvetica';
+            topTypes.forEach(([tipo, stats]) => {
+                const records = window.stats.recordsByType[tipo];
+                if (records && records.longestKm.km > 0) {
+                    const activityEmoji = window.typeEmojis[tipo] || '🔵';
+                    ctx.fillStyle = '#333';
+                    ctx.fillText(`${activityEmoji} ${records.longestKm.km.toFixed(1)}km`, col1X, offsetY);
+                    ctx.font = '12px Helvetica'; // ✅ Da 11px a 12px
+                    ctx.fillStyle = '#666';
+                    ctx.fillText(formatDateShort(records.longestKm.date), col1X + 100, offsetY);
+                    ctx.font = '13px Helvetica';
+                    offsetY += 18;
+                }
+            });
+            
+            // ✅ DISLIVELLO MASSIMO (globale, qualsiasi tipo)
+            let maxElevActivity = null;
+            Object.entries(window.stats.recordsByType).forEach(([tipo, records]) => {
+                if (!maxElevActivity || records.maxElev.elev > maxElevActivity.elev) {
+                    maxElevActivity = {
+                        elev: records.maxElev.elev,
+                        date: records.maxElev.date,
+                        tipo: tipo
+                    };
+                }
+            });
+            
+            if (maxElevActivity && maxElevActivity.elev > 0) {
+                const elevEmoji = window.typeEmojis[maxElevActivity.tipo] || '🔵';
+                ctx.fillStyle = '#333';
+                ctx.font = '13px Helvetica';
+                ctx.fillText(`🏔️ ${Math.round(maxElevActivity.elev)}m D+`, col1X, offsetY);
+                ctx.font = '12px Helvetica';
+                ctx.fillStyle = '#666';
+                ctx.fillText(`${elevEmoji} ${formatDateShort(maxElevActivity.date)}`, col1X + 100, offsetY);
+                offsetY += 18;
+            }
+            
+            offsetY += 10;
+            
+            // ✅ DISTRIBUZIONE DISTANZE (tipo principale)
+            const mainType = topTypes[0]?.[0]; // Tipo con più km
+            if (mainType && window.stats.distByType[mainType]) {
+                ctx.fillStyle = '#333';
+                ctx.font = 'bold 15px Helvetica';
+                const mainEmoji = window.typeEmojis[mainType] || '🔵';
+                ctx.fillText(`${mainEmoji} Distanze:`, col1X, offsetY);
+                offsetY += 22;
+                
+                ctx.font = '12px Helvetica';
+                const dist = window.stats.distByType[mainType];
+                const totalAct = Object.values(dist).reduce((a,b) => a+b, 0);
+                
+                const distEntries = Object.entries(dist).filter(([, count]) => count > 0);
+                
+                // ✅ LARGEST REMAINDER METHOD
+                // 1. Calcola percentuali esatte
+                const exactPercentages = distEntries.map(([range, count]) => ({
+                    range,
+                    count,
+                    exact: (count / totalAct) * 100
+                }));
+                
+                // 2. Estrai parti intere e resti
+                exactPercentages.forEach(item => {
+                    item.floor = Math.floor(item.exact);
+                    item.remainder = item.exact - item.floor;
+                });
+                
+                // 3. Calcola punti mancanti
+                const sumFloors = exactPercentages.reduce((sum, item) => sum + item.floor, 0);
+                const pointsToDistribute = 100 - sumFloors;
+                
+                // 4. Ordina per resto decrescente e distribuisci i punti
+                exactPercentages.sort((a, b) => b.remainder - a.remainder);
+                for (let i = 0; i < pointsToDistribute; i++) {
+                    exactPercentages[i].floor += 1;
+                }
+                
+                // 5. Riordina nell'ordine originale (0-5, 5-10, ecc.)
+                const rangeOrder = ['0-5km', '5-10km', '10-20km', '20-42km', 'ultra42+'];
+                exactPercentages.sort((a, b) => 
+                    rangeOrder.indexOf(a.range) - rangeOrder.indexOf(b.range)
+                );
+                
+                // 6. Visualizza
+                exactPercentages.forEach(item => {
+                    ctx.fillStyle = '#333';
+                    ctx.font = '12px Helvetica';
+                    ctx.fillText(item.range.padEnd(12, ' '), col1X, offsetY);
+                    ctx.fillText(`${item.count}`, col1X + 80, offsetY);
+                    ctx.fillStyle = '#777';
+                    ctx.fillText(`(${item.floor}%)`, col1X + 110, offsetY);
+                    offsetY += 17;
+                });
+                
+                // Ultra count
+                const ultraCount = dist['ultra42+'];
+                if (ultraCount > 0) {
+                    offsetY += 5;
+                    ctx.fillStyle = '#f55d3e';
+                    ctx.font = 'bold 13px Helvetica';
+                    ctx.fillText(`🔥 ${ultraCount} ULTRA (42km+)`, col1X, offsetY);
+                }
+            }
+        }
+        
+        // ✅ Calcola confronto con anno precedente
+        function calculateYearComparison(currentYear) {
+            const previousYear = currentYear - 1;
+            
+            // Filtra dati anno corrente
+            const currentYearData = window.allActivitiesData.filter(a => {
+                return parseInt(a.data.split('-')[0]) === currentYear;
+            });
+            
+            // Filtra dati anno precedente
+            const previousYearData = window.allActivitiesData.filter(a => {
+                return parseInt(a.data.split('-')[0]) === previousYear;
+            });
+            
+            if (previousYearData.length === 0) {
+                return null; // Nessun dato per anno precedente
+            }
+            
+            // Calcola totali
+            const currentKm = currentYearData.reduce((sum, a) => sum + a.km, 0);
+            const previousKm = previousYearData.reduce((sum, a) => sum + a.km, 0);
+            const currentElev = currentYearData.reduce((sum, a) => sum + a.dislivello, 0);
+            const previousElev = previousYearData.reduce((sum, a) => sum + a.dislivello, 0);
+            const currentActivities = currentYearData.length;
+            const previousActivities = previousYearData.length;
+            
+            // Calcola differenze
+            const kmDiff = currentKm - previousKm;
+            const kmPercent = previousKm > 0 ? ((kmDiff / previousKm) * 100).toFixed(1) + '%' : 'N/A';
+            
+            const elevDiff = currentElev - previousElev;
+            const elevPercent = previousElev > 0 ? ((elevDiff / previousElev) * 100).toFixed(1) + '%' : 'N/A';
+            
+            const activityDiff = currentActivities - previousActivities;
+            const activityPercent = previousActivities > 0 ? ((activityDiff / previousActivities) * 100).toFixed(1) + '%' : 'N/A';
+            
+            return {
+                previousYear,
+                currentKm,
+                previousKm,
+                kmDiff,
+                kmPercent,
+                currentElev,
+                previousElev,
+                elevDiff,
+                elevPercent,
+                currentActivities,
+                previousActivities,
+                activityDiff,
+                activityPercent
+            };
+        }
+
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('csvFile');
+
+        function handleFile(e) {
+            debug.innerHTML = '';
+            const file = e.target.files?.[0] || e.dataTransfer?.files?.[0];
+            if (!file) return;
+            
+            status.textContent = '🔄 Parsing CSV (tutti gli anni)...';
+            const reader = new FileReader();
+            reader.onload = ev => {
+                // ✅ Parsa TUTTI gli anni (year viene ignorato nel nuovo parseCSV)
+                const allData = parseCSVAllYears(ev.target.result);
+                
+                // Salva globalmente
+                window.allActivitiesData = allData;
+                
+                // Mostra l'anno attualmente selezionato
+                filterAndDisplayYear(year);
+            };
+            reader.readAsText(file, 'UTF-8');
+        }
+
+        uploadArea.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', handleFile);
+        uploadArea.addEventListener('drop', handleFile);
+
+        ['dragenter', 'dragover'].forEach(ev => uploadArea.addEventListener(ev, e => {
+            e.preventDefault(); e.stopPropagation(); uploadArea.classList.add('dragover');
+        }));
+        ['dragleave', 'drop'].forEach(ev => uploadArea.addEventListener(ev, e => {
+            e.preventDefault(); e.stopPropagation(); uploadArea.classList.remove('dragover');
+        }));
+
+        document.getElementById('yearSelect').addEventListener('change', e => {
+            year = parseInt(e.target.value);
+            filterAndDisplayYear(year); // ✅ Filtra e mostra dati per nuovo anno
+        });
+
+        document.getElementById('downloadPngWhite').addEventListener('click', () => {
+            exportCanvas(false); // Con sfondo bianco
+        });
+
+        document.getElementById('downloadPngTransparent').addEventListener('click', () => {
+            exportCanvas(true); // Sfondo trasparente
+        });
+
+        document.getElementById('downloadAllYearsWhite').addEventListener('click', () => {
+            exportAllYears(false); // Tutti gli anni, sfondo bianco
+        });
+
+        document.getElementById('downloadAllYearsTransparent').addEventListener('click', () => {
+            exportAllYears(true); // Tutti gli anni, trasparente
+        });
+
+        function exportCanvas(transparent) {
+            const startX = 80;
+            const startY = 120;
+            const gridWidth = 12 * cellSize;
+            const gridHeight = 31 * cellSize;
+            const statsWidth = 420; // ✅ Aumentato per includere colonna confronto
+            const padding = 40;
+            const headerSpace = 100;
+            
+            const exportWidth = gridWidth + statsWidth + padding * 2;
+            const exportHeight = gridHeight + headerSpace + padding * 2;
+            
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = exportWidth;
+            tempCanvas.height = exportHeight;
+            const tempCtx = tempCanvas.getContext('2d', { alpha: true });
+            
+            // ✅ Sfondo bianco O trasparente
+            if (!transparent) {
+                tempCtx.fillStyle = '#ffffff';
+                tempCtx.fillRect(0, 0, exportWidth, exportHeight);
+            }
+            // Se transparent, non disegnare nulla (rimane trasparente)
+            
+            // Ridisegna tutto sul canvas temporaneo
+            const offsetX = padding;
+            const offsetY = padding + headerSpace; // ✅ Rimosso -60
+            
+            // Header mesi
+            tempCtx.fillStyle = '#333';
+            tempCtx.font = 'bold 22px Helvetica';
+            tempCtx.textAlign = 'center';
+            tempCtx.textBaseline = 'middle';
+            months.forEach((month, m) => {
+                tempCtx.fillText(month, offsetX + m * cellSize + cellSize / 2, padding + 30); // ✅ Y più alto
+            });
+            
+            // Numeri giorni
+            tempCtx.fillStyle = '#666';
+            tempCtx.font = 'bold 18px Helvetica';
+            tempCtx.textAlign = 'right';
+            for (let day = 1; day <= 31; day++) {
+                tempCtx.fillText(day.toString(), offsetX - 15, offsetY + (day - 1) * cellSize + cellSize / 2);
+            }
+            
+            // Griglia celle
+            for (let month = 0; month < 12; month++) {
+                for (let day = 1; day <= 31; day++) {
+                    const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                    const activities = dailyActivities[dateKey] || [];
+                    drawCellOnContext(tempCtx, offsetX + month * cellSize, offsetY + (day - 1) * cellSize, activities);
+                }
+            }
+            
+            // Riepilogo
+            const infoX = offsetX + gridWidth + 50;
+            tempCtx.textAlign = 'left';
+            tempCtx.textBaseline = 'top';
+            tempCtx.fillStyle = '#333';
+            tempCtx.font = 'bold 20px Helvetica';
+            tempCtx.fillText(`Riepilogo ${year}`, infoX, offsetY);
+            
+            tempCtx.font = '16px Helvetica';
+            let infoY = offsetY + 40;
+            Object.entries(window.statsByType).forEach(([tipo, s]) => {
+                tempCtx.fillStyle = window.typeColors[tipo] || '#333';
+                tempCtx.fillText(`${window.typeEmojis[tipo] || '🔵'} ${tipo}: ${s.count}`, infoX, infoY);
+                
+                // ✅ Se km molto bassi, mostra minuti
+                if (s.km < 0.1 && s.minuti > 0) {
+                    const ore = Math.floor(s.minuti / 60);
+                    const min = s.minuti % 60;
+                    const timeStr = ore > 0 ? `${ore}h ${min}min` : `${min}min`;
+                    tempCtx.fillText(`⏱️ ${timeStr}`, infoX, infoY + 20);
+                } else {
+                    tempCtx.fillText(`${s.km.toFixed(1)}km`, infoX, infoY + 20);
+                }
+                
+                if (s.elev > 0) tempCtx.fillText(`⛰️ ${Math.round(s.elev)}m`, infoX, infoY + 40);
+                infoY += s.elev > 0 ? 70 : 50;
+            });
+            
+            tempCtx.fillStyle = '#333';
+            tempCtx.font = 'bold 16px Helvetica';
+            infoY += 15;
+            
+            // ✅ LAYOUT ORIZZONTALE: Stats a sinistra, confronto a destra
+            const col1X = infoX;
+            const col2X = infoX + 155; // ✅ Più vicino
+            
+            // Calcola confronto
+            const comparison = window.allActivitiesData && window.allActivitiesData.length > 0 
+                ? calculateYearComparison(year) 
+                : null;
+            
+            // Header
+            tempCtx.fillStyle = '#333';
+            tempCtx.font = 'bold 16px Helvetica';
+            tempCtx.fillText(`📊 ${year}:`, col1X, infoY);
+            if (comparison) {
+                tempCtx.fillText(`📊 vs ${comparison.previousYear}:`, col2X, infoY);
+            }
+            infoY += 25;
+            
+            // Riga 1: Km
+            tempCtx.font = 'bold 16px Helvetica';
+            tempCtx.fillStyle = '#333';
+            tempCtx.fillText(`📋 ${window.stats.totalKm.toFixed(1)}km`, col1X, infoY);
+            if (comparison) {
+                const kmDiff = comparison.kmDiff;
+                const kmColor = kmDiff >= 0 ? '#4da167' : '#f55d3e';
+                tempCtx.fillStyle = kmColor;
+                tempCtx.font = '14px Helvetica';
+                const kmSymbol = kmDiff >= 0 ? '↗' : '↘';
+                tempCtx.fillText(`${kmSymbol} ${Math.abs(kmDiff).toFixed(1)}km (${comparison.kmPercent})`, col2X, infoY);
+            }
+            infoY += 25;
+            
+            // Riga 2: Dislivello
+            if (window.stats.totalElev > 0) {
+                tempCtx.fillStyle = '#333';
+                tempCtx.font = 'bold 16px Helvetica';
+                tempCtx.fillText(`⛰️ ${Math.round(window.stats.totalElev)}m D+`, col1X, infoY);
+                if (comparison && comparison.elevDiff !== undefined) {
+                    const elevDiff = comparison.elevDiff;
+                    const elevColor = elevDiff >= 0 ? '#4da167' : '#f55d3e';
+                    tempCtx.fillStyle = elevColor;
+                    tempCtx.font = '14px Helvetica';
+                    const elevSymbol = elevDiff >= 0 ? '↗' : '↘';
+                    tempCtx.fillText(`${elevSymbol} ${Math.abs(elevDiff).toFixed(0)}m (${comparison.elevPercent})`, col2X, infoY);
+                }
+                infoY += 25;
+            }
+            
+            // Riga 3: Giorni attivi
+            tempCtx.fillStyle = '#333';
+            tempCtx.font = '14px Helvetica';
+            tempCtx.fillText(`📅 ${window.stats.activeDays} giorni attivi`, col1X, infoY);
+            if (comparison) {
+                const actDiff = comparison.activityDiff;
+                const actColor = actDiff >= 0 ? '#4da167' : '#f55d3e';
+                tempCtx.fillStyle = actColor;
+                const actSymbol = actDiff >= 0 ? '↗' : '↘';
+                tempCtx.fillText(`${actSymbol} ${Math.abs(actDiff)} attività (${comparison.activityPercent})`, col2X, infoY);
+            }
+            infoY += 20;
+            
+            // Riga 4: Riposo
+            tempCtx.fillStyle = '#333';
+            tempCtx.font = '14px Helvetica';
+            tempCtx.fillText(`😴 ${window.stats.restDays} giorni riposo`, col1X, infoY);
+            infoY += 25;
+            
+            // Riga 5: Streak
+            if (window.stats.longestStreak > 1) {
+                tempCtx.font = 'bold 14px Helvetica';
+                tempCtx.fillStyle = '#f55d3e';
+                tempCtx.fillText(`🔥 Streak: ${window.stats.longestStreak} giorni`, col1X, infoY);
+                infoY += 18;
+                tempCtx.font = '12px Helvetica';
+                tempCtx.fillStyle = '#666';
+                tempCtx.fillText(window.stats.streakDates, col1X + 5, infoY);
+                infoY += 30;
+            } else {
+                infoY += 10;
+            }
+            
+            // ✅ RECORD PERSONALI (top 2 tipi)
+            tempCtx.fillStyle = '#333';
+            tempCtx.font = 'bold 15px Helvetica';
+            tempCtx.fillText('🏆 Record:', col1X, infoY);
+            infoY += 22;
+            
+            const topTypes = Object.entries(window.statsByType)
+                .sort((a, b) => b[1].km - a[1].km)
+                .slice(0, 2);
+            
+            tempCtx.font = '13px Helvetica';
+            topTypes.forEach(([tipo, stats]) => {
+                const records = window.stats.recordsByType[tipo];
+                if (records && records.longestKm.km > 0) {
+                    const activityEmoji = window.typeEmojis[tipo] || '🔵';
+                    tempCtx.fillStyle = '#333';
+                    tempCtx.fillText(`${activityEmoji} ${records.longestKm.km.toFixed(1)}km`, col1X, infoY);
+                    tempCtx.font = '12px Helvetica';
+                    tempCtx.fillStyle = '#666';
+                    tempCtx.fillText(formatDateShort(records.longestKm.date), col1X + 100, infoY);
+                    tempCtx.font = '13px Helvetica';
+                    infoY += 18;
+                }
+            });
+            
+            // ✅ DISLIVELLO MASSIMO (globale)
+            let maxElevActivity = null;
+            Object.entries(window.stats.recordsByType).forEach(([tipo, records]) => {
+                if (!maxElevActivity || records.maxElev.elev > maxElevActivity.elev) {
+                    maxElevActivity = {
+                        elev: records.maxElev.elev,
+                        date: records.maxElev.date,
+                        tipo: tipo
+                    };
+                }
+            });
+            
+            if (maxElevActivity && maxElevActivity.elev > 0) {
+                const elevEmoji = window.typeEmojis[maxElevActivity.tipo] || '🔵';
+                tempCtx.fillStyle = '#333';
+                tempCtx.font = '13px Helvetica';
+                tempCtx.fillText(`🏔️ ${Math.round(maxElevActivity.elev)}m D+`, col1X, infoY);
+                tempCtx.font = '12px Helvetica';
+                tempCtx.fillStyle = '#666';
+                tempCtx.fillText(`${elevEmoji} ${formatDateShort(maxElevActivity.date)}`, col1X + 100, infoY);
+                infoY += 18;
+            }
+            
+            infoY += 10;
+            
+            // ✅ DISTRIBUZIONE DISTANZE (tipo principale)
+            const mainType = topTypes[0]?.[0];
+            if (mainType && window.stats.distByType[mainType]) {
+                tempCtx.fillStyle = '#333';
+                tempCtx.font = 'bold 15px Helvetica';
+                const mainEmoji = window.typeEmojis[mainType] || '🔵';
+                tempCtx.fillText(`${mainEmoji} Distanze:`, col1X, infoY);
+                infoY += 22;
+                
+                tempCtx.font = '12px Helvetica';
+                const dist = window.stats.distByType[mainType];
+                const totalAct = Object.values(dist).reduce((a,b) => a+b, 0);
+                
+                const distEntries = Object.entries(dist).filter(([, count]) => count > 0);
+                
+                // ✅ LARGEST REMAINDER METHOD
+                const exactPercentages = distEntries.map(([range, count]) => ({
+                    range,
+                    count,
+                    exact: (count / totalAct) * 100
+                }));
+                
+                exactPercentages.forEach(item => {
+                    item.floor = Math.floor(item.exact);
+                    item.remainder = item.exact - item.floor;
+                });
+                
+                const sumFloors = exactPercentages.reduce((sum, item) => sum + item.floor, 0);
+                const pointsToDistribute = 100 - sumFloors;
+                
+                exactPercentages.sort((a, b) => b.remainder - a.remainder);
+                for (let i = 0; i < pointsToDistribute; i++) {
+                    exactPercentages[i].floor += 1;
+                }
+                
+                const rangeOrder = ['0-5km', '5-10km', '10-20km', '20-42km', 'ultra42+'];
+                exactPercentages.sort((a, b) => 
+                    rangeOrder.indexOf(a.range) - rangeOrder.indexOf(b.range)
+                );
+                
+                exactPercentages.forEach(item => {
+                    tempCtx.fillStyle = '#333';
+                    tempCtx.font = '12px Helvetica';
+                    tempCtx.fillText(item.range.padEnd(12, ' '), col1X, infoY);
+                    tempCtx.fillText(`${item.count}`, col1X + 80, infoY);
+                    tempCtx.fillStyle = '#777';
+                    tempCtx.fillText(`(${item.floor}%)`, col1X + 110, infoY);
+                    infoY += 17;
+                });
+                
+                const ultraCount = dist['ultra42+'];
+                if (ultraCount > 0) {
+                    infoY += 5;
+                    tempCtx.fillStyle = '#f55d3e';
+                    tempCtx.font = 'bold 13px Helvetica';
+                    tempCtx.fillText(`🔥 ${ultraCount} ULTRA (42km+)`, col1X, infoY);
+                }
+            }
+            
+            // Scarica
+            const link = document.createElement('a');
+            const suffix = transparent ? 'transparent' : 'white';
+            link.download = `strava-${year}-pixels-${suffix}.png`;
+            link.href = tempCanvas.toDataURL('image/png');
+            link.click();
+        }
+
+        // ✅ EXPORT TUTTI GLI ANNI AFFIANCATI
+        function exportAllYears(transparent) {
+            if (!window.allActivitiesData || window.allActivitiesData.length === 0) {
+                alert('Carica prima il CSV!');
+                return;
+            }
+            
+            // Trova tutti gli anni disponibili
+            const yearsSet = new Set();
+            window.allActivitiesData.forEach(activity => {
+                const activityYear = parseInt(activity.data.split('-')[0]);
+                yearsSet.add(activityYear);
+            });
+            const allYears = Array.from(yearsSet).sort((a, b) => a - b); // Ordine cronologico
+            
+            if (allYears.length === 0) {
+                alert('Nessun dato disponibile');
+                return;
+            }
+            
+            // Dimensioni per ogni griglia
+            const gridWidth = 12 * cellSize;
+            const gridHeight = 31 * cellSize;
+            const headerSpace = 120; // ✅ Aumentato per più spazio
+            const padding = 30;
+            const gapBetweenYears = 60;
+            
+            // Dimensioni canvas totale
+            const singleYearWidth = gridWidth + padding * 2;
+            const totalWidth = singleYearWidth * allYears.length + gapBetweenYears * (allYears.length - 1);
+            const totalHeight = gridHeight + headerSpace + padding * 2;
+            
+            // Crea canvas
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = totalWidth;
+            tempCanvas.height = totalHeight;
+            const tempCtx = tempCanvas.getContext('2d', { alpha: true });
+            
+            // Sfondo
+            if (!transparent) {
+                tempCtx.fillStyle = '#ffffff';
+                tempCtx.fillRect(0, 0, totalWidth, totalHeight);
+            }
+            
+            // Disegna ogni anno
+            let currentX = 0;
+            allYears.forEach((yearToDraw, yearIndex) => {
+                // Filtra dati per questo anno
+                const yearData = window.allActivitiesData.filter(a => {
+                    return parseInt(a.data.split('-')[0]) === yearToDraw;
+                });
+                
+                // Crea mappa giornaliera per questo anno
+                const dailyMap = {};
+                yearData.forEach(a => {
+                    if (!dailyMap[a.data]) dailyMap[a.data] = [];
+                    dailyMap[a.data].push({tipo: a.tipo, km: a.km});
+                });
+                
+                const offsetX = currentX + padding;
+                const offsetY = padding + headerSpace; // ✅ Rimosso -60
+                
+                // Header anno
+                tempCtx.fillStyle = '#333';
+                tempCtx.font = 'bold 28px Helvetica';
+                tempCtx.textAlign = 'center';
+                tempCtx.fillText(yearToDraw.toString(), offsetX + gridWidth / 2, padding + 20); // ✅ Spostato più in alto
+                
+                // Header mesi
+                tempCtx.font = 'bold 18px Helvetica';
+                months.forEach((month, m) => {
+                    tempCtx.fillText(month, offsetX + m * cellSize + cellSize / 2, padding + 55); // ✅ Più spazio sotto l'anno
+                });
+                
+                // Numeri giorni
+                tempCtx.fillStyle = '#666';
+                tempCtx.font = 'bold 14px Helvetica';
+                tempCtx.textAlign = 'right';
+                for (let day = 1; day <= 31; day++) {
+                    tempCtx.fillText(day.toString(), offsetX - 10, offsetY + (day - 1) * cellSize + cellSize / 2);
+                }
+                
+                // Griglia celle
+                for (let month = 0; month < 12; month++) {
+                    for (let day = 1; day <= 31; day++) {
+                        const dateKey = `${yearToDraw}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                        const activities = dailyMap[dateKey] || [];
+                        drawCellOnContext(tempCtx, offsetX + month * cellSize, offsetY + (day - 1) * cellSize, activities);
+                    }
+                }
+                
+                currentX += singleYearWidth + gapBetweenYears;
+            });
+            
+            // Scarica
+            const link = document.createElement('a');
+            const suffix = transparent ? 'transparent' : 'white';
+            link.download = `strava-all-years-${allYears[0]}-${allYears[allYears.length-1]}-${suffix}.png`;
+            link.href = tempCanvas.toDataURL('image/png');
+            link.click();
+        }
+        
+        function drawCellOnContext(ctx, x, y, activities) {
+            const radius = cellSize / 2 - 0.5;
+            const centerX = x + radius;
+            const centerY = y + radius;
+            
+            ctx.save();
+            
+            if (!activities || activities.length === 0) {
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+                ctx.fillStyle = '#ffffff';
+                ctx.fill();
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = '#d0d0d0';
+                ctx.stroke();
+            } else if (activities.length === 1) {
+                const color = window.typeColors[activities[0].tipo];
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+                ctx.fillStyle = color || '#888';
+                ctx.fill();
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = '#d0d0d0';
+                ctx.stroke();
+            } else {
+                const uniqueTypes = [...new Set(activities.map(a => a.tipo))];
+                
+                if (uniqueTypes.length === 1) {
+                    const tipo = uniqueTypes[0];
+                    const count = activities.length;
+                    const color = window.typeColors[tipo] || '#888';
+                    
+                    ctx.beginPath();
+                    ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+                    ctx.fillStyle = color;
+                    ctx.fill();
+                    
+                    ctx.fillStyle = 'white';
+                    ctx.font = 'bold 11px Helvetica';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+                    ctx.shadowBlur = 2;
+                    ctx.shadowOffsetX = 0.5;
+                    ctx.shadowOffsetY = 0.5;
+                    ctx.fillText(`${count}x`, centerX, centerY);
+                    
+                    ctx.lineWidth = 1;
+                    ctx.strokeStyle = '#d0d0d0';
+                    ctx.stroke();
+                } else {
+                    const totalKm = activities.reduce((sum, act) => sum + act.km, 0);
+                    let startAngle = -Math.PI / 2;
+                    
+                    activities.forEach(activity => {
+                        const sliceAngle = (activity.km / totalKm) * 2 * Math.PI;
+                        const endAngle = startAngle + sliceAngle;
+                        
+                        ctx.beginPath();
+                        ctx.moveTo(centerX, centerY);
+                        ctx.arc(centerX, centerY, radius, startAngle, endAngle);
+                        ctx.closePath();
+                        const color = window.typeColors[activity.tipo] || '#888';
+                        ctx.fillStyle = color;
+                        ctx.fill();
+                        
+                        startAngle = endAngle;
+                    });
+                    
+                    ctx.lineWidth = 1;
+                    ctx.strokeStyle = '#d0d0d0';
+                    ctx.beginPath();
+                    ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+                    ctx.stroke();
+                }
+            }
+            
+            ctx.restore();
+        }
+
+        aggregateData([]);
+        renderGrid();
+    </script>
+</body>
+</html>
